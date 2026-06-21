@@ -1,6 +1,6 @@
 use clap::builder::styling::AnsiColor;
 use clap::builder::Styles;
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::path::Path;
@@ -682,6 +682,19 @@ fn run(cli: &Cli, limit: u32, pg: u32) -> Result<Value, String> {
 
 fn main() {
     let cli = Cli::parse();
+
+    if cli.sub.is_none()
+        && cli.search.is_none()
+        && cli.user.is_none()
+        && cli.post.is_none()
+        && cli.list.is_none()
+    {
+        let mut cmd = Cli::command();
+        let _ = cmd.print_help();
+        println!();
+        std::process::exit(0);
+    }
+
     let limit = cli.limit.clamp(1, 100);
     let pg = if cli.pg == 0 { 1 } else { cli.pg };
 
