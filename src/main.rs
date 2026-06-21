@@ -465,11 +465,122 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn download_gallery(post_data: &Value, dir: &Path, post_id: &str) {
+    let metadata = match post_data.get("media_metadata").and_then(|m| m.as_object()) {
+        Some(m) => m,
+        None => return,
+    };
+
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("warning: cannot create directory: {}", e);
+        return;
+    }
+
+    let ordered_ids: Vec<String> = if let Some(arr) =
+        post_data["gallery_data"]["items"].as_array()
+    {
+        arr.iter()
+            .filter_map(|item| item.get("media_id").and_then(|m| m.as_str()))
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        // fallback: use metadata keys sorted alphabetically
+        let mut keys: Vec<&String> = metadata.keys().collect();
+        keys.sort();
+        keys.iter().map(|k| (*k).clone()).collect()
+    };
+
+    for (i, media_id) in ordered_ids.iter().enumerate() {
+        let info = match metadata.get(media_id) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        let kind = info.get("e").and_then(|e| e.as_str()).unwrap_or("");
+
+        match kind {
+            "Image" => {
+                let url = match info["s"]["u"].as_str() {
+                    Some(u) => u,
+                    None => continue,
+                };
+                let url = url.replace("&amp;", "&");
+
+                let mime = info.get("m").and_then(|m| m.as_str()).unwrap_or("image/jpg");
+                let ext = mime.rsplit('/').next().unwrap_or("jpg");
+
+                let filename = format!("{}_{:02}.{}", post_id, i + 1, ext);
+                let dest = dir.join(&filename);
+
+                if dest.exists() {
+                    continue;
+                }
+
+                match download_file(&url, &dest) {
+                    Ok(()) => println!("downloaded: {} (gallery image)", dest.display()),
+                    Err(e) => {
+                        eprintln!("warning: gallery image download failed for {}: {}", media_id, e)
+                    }
+                }
+            }
+            "RedditVideo" => {
+                // Try fallbackUrl first, then dashUrl, then hlsUrl
+                let vurl = info
+                    .get("fallbackUrl")
+                    .and_then(|u| u.as_str())
+                    .or_else(|| info.get("dashUrl").and_then(|u| u.as_str()))
+                    .or_else(|| info.get("hlsUrl").and_then(|u| u.as_str()));
+
+                if let Some(vurl) = vurl {
+                    let clean = vurl.split('?').next().unwrap_or(vurl);
+                    let filename = format!("{}_{:02}.mp4", post_id, i + 1);
+                    let dest = dir.join(&filename);
+
+                    if dest.exists() {
+                        continue;
+                    }
+
+                    match download_file(&clean, &dest) {
+                        Ok(()) => println!("downloaded: {} (gallery video)", dest.display()),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: gallery video download failed for {}: {}",
+                                media_id, e
+                            )
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "warning: no video URL found for gallery media {} (post {})",
+                        media_id, post_id
+                    );
+                }
+            }
+            _ => {
+                eprintln!(
+                    "warning: unknown gallery media type '{}' for media {} (post {})",
+                    kind, media_id, post_id
+                );
+            }
+        }
+    }
+}
+
 fn download_media_for_post(post_data: &Value, dir: &Path) {
     let id = post_data
         .get("id")
         .and_then(|i| i.as_str())
         .unwrap_or("post");
+
+    // Handle gallery posts
+    if post_data
+        .get("is_gallery")
+        .and_then(|g| g.as_bool())
+        .unwrap_or(false)
+    {
+        download_gallery(post_data, dir, id);
+        return;
+    }
 
     let (url, kind) = match find_media_url(post_data) {
         Some(m) => m,
@@ -578,8 +689,9 @@ fn main() {
         Ok(v) => {
             if cli.download {
                 download_all(&v, &cli);
+            } else {
+                print_output(&v, &cli);
             }
-            print_output(&v, &cli);
         }
         Err(e) => {
             eprintln!("error: {}", e);
